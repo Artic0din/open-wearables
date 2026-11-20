@@ -13,8 +13,6 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import HTTPException, status
-
 from app.database import DbSession
 from app.repositories.data_source_repository import DataSourceRepository
 from app.repositories.user_connection_repository import UserConnectionRepository
@@ -235,14 +233,8 @@ class LadderWorkouts:
 
     def get_workouts_from_api(self, db: DbSession, user_id: UUID, **kwargs: Any) -> Any:
         """Direct workout list passthrough is not supported for Ladder."""
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Provider 'ladder' does not support direct workout reads",
-        )
+        raise NotImplementedError(f"Provider '{self.provider_name}' does not support direct workout reads")
 
     def get_workout_detail_from_api(self, db: DbSession, user_id: UUID, workout_id: str, **kwargs: Any) -> Any:
         """Direct workout detail passthrough is not supported for Ladder."""
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Provider 'ladder' does not support direct workout reads",
-        )
+        raise NotImplementedError(f"Provider '{self.provider_name}' does not support direct workout reads")
