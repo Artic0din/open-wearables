@@ -9,7 +9,9 @@ from uuid import UUID
 
 from app.database import DbSession
 from app.models import UserConnection
+from app.repositories.data_source_repository import DataSourceRepository
 from app.repositories.user_connection_repository import UserConnectionRepository
+from app.schemas.enums import ProviderName
 from app.schemas.model_crud.user_management import UserConnectionCreate
 from app.utils.structured_logging import get_logger
 
@@ -38,9 +40,42 @@ def parse_jwt_exp(jwt_token: str) -> datetime | None:
 class LadderAuth:
     """Persist / update a manually pasted Ladder JWT as ``user_connection``."""
 
-    def __init__(self, connection_repo: UserConnectionRepository, provider_name: str = "ladder"):
+    def __init__(
+        self,
+        connection_repo: UserConnectionRepository,
+        data_source_repo: DataSourceRepository | None = None,
+        provider_name: str = "ladder",
+    ):
         self.connection_repo = connection_repo
+        self.data_source_repo = data_source_repo or DataSourceRepository()
         self.provider_name = provider_name
+
+    def connect_manual(
+        self,
+        db_session: DbSession,
+        user_id: UUID,
+        token: str,
+        *,
+        provider_user_id: str,
+        bootcamp_id: str | None = None,
+    ) -> UserConnection:
+        """Persist a Ladder connection and ensure its default DataSource exists."""
+        connection = self.store_token(
+            db_session,
+            user_id,
+            token,
+            provider_user_id=provider_user_id,
+            bootcamp_id=bootcamp_id,
+        )
+        self.data_source_repo.ensure_data_source(
+            db_session=db_session,
+            user_id=user_id,
+            provider=ProviderName.LADDER,
+            user_connection_id=connection.id,
+            device_model="Ladder Web",
+            source="ladder",
+        )
+        return connection
 
     def store_token(
         self,

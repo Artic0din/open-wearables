@@ -12,7 +12,6 @@ from pydantic import BaseModel
 from app.config import settings
 from app.database import DbSession
 from app.integrations.celery.tasks import sync_vendor_data
-from app.repositories.data_source_repository import DataSourceRepository
 from app.schemas.auth import ConnectionStatus
 from app.schemas.enums import ProviderName
 from app.services import ApiKeyDep, user_connection_service
@@ -22,8 +21,6 @@ from app.services.providers.ladder.strategy import LadderStrategy
 from app.utils.exceptions import ProviderAuthRejectedError, ProviderError
 
 router = APIRouter()
-
-data_source_repo = DataSourceRepository()
 
 
 class LadderConnectManualRequest(BaseModel):
@@ -87,21 +84,12 @@ def connect_ladder_manual(
     if not provider_user_id:
         raise HTTPException(status_code=500, detail="Could not extract Ladder user ID from /users/me response")
 
-    connection = strategy.auth_helper.store_token(
+    connection = strategy.auth_helper.connect_manual(
         db,
         user_id,
         payload.token,
         provider_user_id=provider_user_id,
         bootcamp_id=bootcamp_id,
-    )
-
-    data_source_repo.ensure_data_source(
-        db_session=db,
-        user_id=user_id,
-        provider=ProviderName.LADDER,
-        user_connection_id=connection.id,
-        device_model="Ladder Web",
-        source="ladder",
     )
 
     # Mirror OAuth callback: stamp live-sync cursor, then optional historical pull.

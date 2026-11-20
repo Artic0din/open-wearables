@@ -14,10 +14,8 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
 
 from app.database import DbSession
-from app.models import EventRecord
 from app.repositories.data_source_repository import DataSourceRepository
 from app.repositories.user_connection_repository import UserConnectionRepository
 from app.schemas.enums import EventCategory, ProviderName, SeriesType
@@ -129,16 +127,7 @@ class LadderWorkouts:
 
         sessions = payload.get("workoutSessions") or payload.get("sessions") or []
 
-        existing_external_ids: set[str] = {
-            row[0]
-            for row in db.execute(
-                select(EventRecord.external_id).where(
-                    EventRecord.data_source_id == data_source_id,
-                    EventRecord.external_id.is_not(None),
-                )
-            ).all()
-            if row[0] is not None
-        }
+        existing_external_ids = event_record_service.crud.get_external_ids_for_data_source(db, data_source_id)
 
         inserted = 0
         first_detail = True
