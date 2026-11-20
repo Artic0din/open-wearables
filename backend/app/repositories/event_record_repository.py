@@ -1696,6 +1696,19 @@ class EventRecordRepository(
             query = query.filter(EventRecord.end_datetime < ends_before)
         return [(record, details) for record, details in query.all()]
 
+    def get_external_ids_for_data_source(self, db_session: DbSession, data_source_id: UUID) -> set[str]:
+        """Return all non-null external IDs already stored for a data source."""
+        return {
+            row[0]
+            for row in db_session.execute(
+                select(EventRecord.external_id).where(
+                    EventRecord.data_source_id == data_source_id,
+                    EventRecord.external_id.is_not(None),
+                )
+            ).all()
+            if row[0] is not None
+        }
+
     def set_nap_flags(self, db_session: DbSession, flags: list[tuple[SleepDetails, bool]]) -> None:
         """Set the nap flag of each sleep details row and flush."""
         for details, is_nap in flags:

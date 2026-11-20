@@ -384,9 +384,14 @@ class UserConnectionRepository(CrudRepository[UserConnection, UserConnectionCrea
         """Re-read the token columns another worker may have written, keeping unflushed changes to the rest."""
         db_session.refresh(connection, attribute_names=["access_token", "refresh_token", "token_expires_at"])
 
-    def update_last_synced_at(self, db_session: DbSession, connection: UserConnection) -> UserConnection:
+    def update_last_synced_at(
+        self,
+        db_session: DbSession,
+        connection: UserConnection,
+        synced_at: datetime | None = None,
+    ) -> UserConnection:
         """Update the last synced timestamp."""
-        connection.last_synced_at = datetime.now(timezone.utc)
+        connection.last_synced_at = synced_at if synced_at is not None else datetime.now(timezone.utc)
         db_session.add(connection)
         db_session.commit()
         db_session.refresh(connection)

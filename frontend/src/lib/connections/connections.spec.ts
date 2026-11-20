@@ -53,12 +53,16 @@ describe('historyDelivery', () => {
 		expect(historyDelivery(connection({}))).toBe('Not supported');
 	});
 
-	it('takes a provider with no cloud API to be fed by the SDK', () => {
+	it('takes a provider with no cloud API to be fed by the SDK unless the connection supports server delivery', () => {
 		const providers = [
 			{ provider: 'apple', has_cloud_api: false },
+			{ provider: 'ladder', has_cloud_api: false },
 			{ provider: 'oura', has_cloud_api: true }
 		];
 		expect(viaSdk(providers, 'apple')).toBe(true);
+		expect(viaSdk(providers, 'apple', connection({}))).toBe(true);
+		// Manual-token pull providers (e.g. Ladder) have no OAuth cloud API, yet pull over REST.
+		expect(viaSdk(providers, 'ladder', connection({ rest_pull: true }))).toBe(false);
 		expect(viaSdk(providers, 'oura')).toBe(false);
 		// A provider the list does not have is not assumed to be one.
 		expect(viaSdk(providers, 'garmin')).toBe(false);

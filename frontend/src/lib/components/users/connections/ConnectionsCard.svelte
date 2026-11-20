@@ -43,7 +43,7 @@
 				<ConnectionCard
 					{connection}
 					label={providerLabel(providers, connection.provider)}
-					viaSdk={viaSdk(providers, connection.provider)}
+					viaSdk={viaSdk(providers, connection.provider, connection)}
 					backfills={byProvider.get(connection.provider) ?? []}
 					onrevoke={() => onrevoke(connection)}
 					onpurge={() => onpurge(connection)}

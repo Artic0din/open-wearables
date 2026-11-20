@@ -4,6 +4,7 @@ Tests for sync_vendor_data Celery task.
 Tests synchronization of workout data from external providers (Garmin, Polar, Suunto).
 """
 
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from sqlalchemy.orm import Session
@@ -64,6 +65,98 @@ class TestSyncVendorDataTask:
         # Verify connection was updated
         db.refresh(connection)
         assert connection.last_synced_at is not None
+
+    @patch("app.integrations.celery.tasks.sync_vendor_data_task.SessionLocal")
+    @patch("app.services.providers.factory.ProviderFactory.get_provider")
+    def test_sync_vendor_data_advances_cursor_to_fetch_cutoff_not_finish_time(
+        self,
+        mock_get_provider: MagicMock,
+        mock_session_local: MagicMock,
+        db: Session,
+        mock_celery_app: MagicMock,
+    ) -> None:
+        """Cursor advances to the fetch cutoff so workouts completed mid-sync are not skipped next run."""
+        user = UserFactory()
+        previous_synced_at = datetime(2025, 1, 10, 12, 0, tzinfo=timezone.utc)
+        connection = UserConnectionFactory(
+            user=user,
+            provider="ladder",
+            status=ConnectionStatus.ACTIVE,
+            last_synced_at=previous_synced_at,
+        )
+
+        mock_session_local.return_value.__enter__.return_value = db
+        mock_session_local.return_value.__exit__.return_value = None
+
+        seen_end_dates: list[str | None] = []
+
+        def fake_load_data(_db: Session, _user_id: object, **kwargs: object) -> int:
+            end_val = kwargs.get("end_date")
+            seen_end_dates.append(str(end_val) if end_val is not None else None)
+            return 1
+
+        mock_workouts = MagicMock()
+        mock_workouts.load_data.side_effect = fake_load_data
+
+        mock_strategy = MagicMock()
+        mock_strategy.capabilities.rest_pull = True
+        mock_strategy.capabilities.webhook_stream = False
+        mock_strategy.workouts = mock_workouts
+        mock_strategy.data_247 = None
+        mock_get_provider.return_value = mock_strategy
+
+        sync_vendor_data(str(user.id), providers=["ladder"])
+
+        assert len(seen_end_dates) == 1
+        assert seen_end_dates[0] is not None
+        fetch_cutoff = datetime.fromisoformat(seen_end_dates[0])
+        db.refresh(connection)
+        assert connection.last_synced_at == fetch_cutoff
+
+    @patch("app.integrations.celery.tasks.sync_vendor_data_task.SessionLocal")
+    @patch("app.services.providers.factory.ProviderFactory.get_provider")
+    def test_sync_vendor_data_normalizes_naive_end_date_and_caps_future_cursor(
+        self,
+        mock_get_provider: MagicMock,
+        mock_session_local: MagicMock,
+        db: Session,
+        mock_celery_app: MagicMock,
+    ) -> None:
+        """Offset-free end_date must not fail max(), and explicit future end_date must cap cursor at pre-fetch time."""
+        user = UserFactory()
+        previous_synced_at = datetime(2025, 1, 10, 12, 0, tzinfo=timezone.utc)
+        connection = UserConnectionFactory(
+            user=user,
+            provider="ladder",
+            status=ConnectionStatus.ACTIVE,
+            last_synced_at=previous_synced_at,
+        )
+
+        mock_session_local.return_value.__enter__.return_value = db
+        mock_session_local.return_value.__exit__.return_value = None
+
+        mock_workouts = MagicMock()
+        mock_workouts.load_data.return_value = 1
+
+        mock_strategy = MagicMock()
+        mock_strategy.capabilities.rest_pull = True
+        mock_strategy.capabilities.webhook_stream = False
+        mock_strategy.workouts = mock_workouts
+        mock_strategy.data_247 = None
+        mock_get_provider.return_value = mock_strategy
+
+        # 1) Offset-free past end_date with an existing aware cursor should succeed without TypeError.
+        sync_vendor_data(str(user.id), end_date="2025-02-01T00:00:00", providers=["ladder"])
+        db.refresh(connection)
+        assert connection.last_synced_at == datetime(2025, 2, 1, 0, 0, tzinfo=timezone.utc)
+
+        # 2) Explicit future end_date must cap cursor advancement at pre-fetch time, not the future bound.
+        before_call = datetime.now(timezone.utc)
+        sync_vendor_data(str(user.id), end_date="2099-01-01T00:00:00Z", providers=["ladder"])
+        after_call = datetime.now(timezone.utc)
+        db.refresh(connection)
+        assert connection.last_synced_at is not None
+        assert before_call <= connection.last_synced_at <= after_call
 
     @patch("app.integrations.celery.tasks.sync_vendor_data_task.SessionLocal")
     @patch("app.services.providers.factory.ProviderFactory.get_provider")
@@ -222,7 +315,13 @@ class TestSyncVendorDataTask:
         """Test handling of provider API errors."""
         # Arrange
         user = UserFactory()
-        UserConnectionFactory(user=user, provider="garmin", status=ConnectionStatus.ACTIVE)
+        connection = UserConnectionFactory(
+            user=user,
+            provider="garmin",
+            status=ConnectionStatus.ACTIVE,
+            last_synced_at=datetime(2025, 1, 10, 12, 0, tzinfo=timezone.utc),
+        )
+        previous_synced_at = connection.last_synced_at
 
         mock_session_local.return_value.__enter__.return_value = db
         mock_session_local.return_value.__exit__.return_value = None
@@ -235,6 +334,7 @@ class TestSyncVendorDataTask:
         mock_strategy.capabilities.rest_pull = True
         mock_strategy.capabilities.webhook_stream = False
         mock_strategy.workouts = mock_workouts
+        mock_strategy.data_247 = None
         mock_get_provider.return_value = mock_strategy
 
         # Act
@@ -246,6 +346,8 @@ class TestSyncVendorDataTask:
         assert result["providers_synced"]["garmin"]["params"]["workouts"]["success"] is False
         # The error's type only: its text could carry the rows a write failed on.
         assert result["providers_synced"]["garmin"]["params"]["workouts"]["error_code"] == "Exception"
+        db.refresh(connection)
+        assert connection.last_synced_at == previous_synced_at
 
     @patch("app.integrations.celery.tasks.sync_vendor_data_task.try_record_data_types")
     @patch("app.integrations.celery.tasks.sync_vendor_data_task.SessionLocal")

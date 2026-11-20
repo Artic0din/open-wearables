@@ -1,4 +1,5 @@
 import { humanise } from '$lib/utils/text';
+import type { Connection } from '$lib/connections/types';
 import type { Provider } from '$lib/server/providers';
 
 /**
@@ -8,8 +9,24 @@ import type { Provider } from '$lib/server/providers';
 export const byName = <T extends { name: string }>(providers: T[]) =>
 	[...providers].sort((a, b) => a.name.localeCompare(b.name));
 
-/** Fed by the mobile SDK rather than a cloud API. Unknown counts as cloud. */
-export const viaSdk = (providers: Pick<Provider, 'provider' | 'has_cloud_api'>[], slug: string) =>
+type DeliveryCapabilities = Pick<
+	Connection,
+	'rest_pull' | 'webhook_stream' | 'webhook_ping' | 'webhook_callback'
+>;
+
+export const hasServerDelivery = (connection: DeliveryCapabilities) =>
+	connection.rest_pull ||
+	connection.webhook_stream ||
+	connection.webhook_ping ||
+	connection.webhook_callback;
+
+/** Fed by the mobile SDK rather than a cloud/server API. Unknown counts as cloud. */
+export const viaSdk = (
+	providers: Pick<Provider, 'provider' | 'has_cloud_api'>[],
+	slug: string,
+	connection?: DeliveryCapabilities
+) =>
+	!(connection && hasServerDelivery(connection)) &&
 	providers.find((entry) => entry.provider === slug)?.has_cloud_api === false;
 
 /** What a provider needs to be shown: its slug, its name and where its logo is. */

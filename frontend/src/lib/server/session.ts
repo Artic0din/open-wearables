@@ -1,4 +1,5 @@
 import type { Cookies } from '@sveltejs/kit';
+import { getRequestEvent } from '$app/server';
 import {
 	ApiError,
 	refreshTokens,
@@ -61,16 +62,38 @@ export function decodeSession(raw: string | undefined): Session | null {
 }
 
 // HttpOnly keeps the tokens out of reach of any script on the page.
+// Only override SvelteKit's default secure cookie behavior when the incoming
+// request itself is plain HTTP (e.g. LAN self-hosting over an IP address).
+// Leaving `secure` omitted otherwise preserves SvelteKit's framework default
+// (secure on HTTPS, allowed on HTTP localhost).
+function cookieSecureOption(): { secure: false } | Record<string, never> {
+	let event: ReturnType<typeof getRequestEvent> | undefined;
+	try {
+		event = getRequestEvent();
+	} catch {
+		return {};
+	}
+	const forwardedProto = event?.request?.headers
+		?.get('x-forwarded-proto')
+		?.split(',')[0]
+		?.trim()
+		.toLowerCase();
+	const isHttp = forwardedProto ? forwardedProto === 'http' : event?.url?.protocol === 'http:';
+	return isHttp ? { secure: false } : {};
+}
+
 function store(cookies: Cookies, session: Session): void {
 	cookies.set(SESSION_COOKIE, encodeSession(session), {
 		path: '/',
 		httpOnly: true,
 		sameSite: 'lax',
-		maxAge: SESSION_TTL_SECONDS
+		maxAge: SESSION_TTL_SECONDS,
+		...cookieSecureOption()
 	});
 }
 
-export const clearSession = (cookies: Cookies) => cookies.delete(SESSION_COOKIE, { path: '/' });
+export const clearSession = (cookies: Cookies) =>
+	cookies.delete(SESSION_COOKIE, { path: '/', ...cookieSecureOption() });
 
 export function createSession(cookies: Cookies, tokens: TokenResponse, developer: Developer): void {
 	store(cookies, sessionFromTokens(tokens, developer));

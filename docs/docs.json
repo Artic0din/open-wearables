@@ -250,7 +250,8 @@
             "group": "Providers",
             "pages": [
               "GET /api/v1/oauth/providers",
-              "GET /api/v1/oauth/{provider}/authorize"
+              "GET /api/v1/oauth/{provider}/authorize",
+              "POST /api/v1/ladder/users/{user_id}/connect-manual"
             ]
           },
           {

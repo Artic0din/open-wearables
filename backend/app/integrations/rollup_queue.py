@@ -7,10 +7,8 @@ from datetime import date
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import event as sa_event
-
 from app.constants.celery_tasks import CeleryTask
-from app.database import DbSession
+from app.database import DbSession, run_after_outer_commit
 from app.integrations import redis_lock
 from app.integrations.redis_client import get_redis_client
 from app.utils.structured_logging import get_logger
@@ -97,8 +95,7 @@ def mark_dirty_days(db_session: DbSession, days: Iterable[tuple[UUID, date]]) ->
     if not members:
         return
 
-    @sa_event.listens_for(db_session, "after_commit", once=True)
-    def _queue(_session: DbSession) -> None:
+    def _queue() -> None:
         try:
             pipe = get_redis_client().pipeline()
             pipe.zadd(DIRTY_DAYS_KEY, _scored(members))
@@ -107,6 +104,8 @@ def mark_dirty_days(db_session: DbSession, days: Iterable[tuple[UUID, date]]) ->
         except Exception as exc:
             # The day stays rolled up as it was; the next write to it, or the backfill, queues it again.
             logger.error("Failed to queue days for the rollup", exc_info=exc, days=len(members))
+
+    run_after_outer_commit(db_session, _queue)
 
 
 def pop_dirty_days(count: int) -> list[tuple[UUID, date]]:

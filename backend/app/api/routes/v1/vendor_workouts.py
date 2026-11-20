@@ -77,7 +77,10 @@ def get_user_workouts(
         "summary_end_time": summary_end_time,
     }
 
-    return strategy.workouts.get_workouts_from_api(db, user_id, **params)
+    try:
+        return strategy.workouts.get_workouts_from_api(db, user_id, **params)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e)) from e
 
 
 @router.get("/{provider}/users/{user_id}/workouts/{workout_id}")
@@ -118,6 +121,8 @@ def get_user_workout_detail(
 
     try:
         return strategy.workouts.get_workout_detail_from_api(db, user_id, workout_id, **params)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(e)) from e
     except ProviderError as e:
         # the provider has no workout with the client's id: not a provider failure, and no retry finds it
         if e.upstream_status == status.HTTP_404_NOT_FOUND:

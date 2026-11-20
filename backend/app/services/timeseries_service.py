@@ -7,10 +7,8 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import event as sa_event
-
 from app.config import settings
-from app.database import DbSession
+from app.database import DbSession, run_after_outer_commit
 from app.integrations import rollup_queue
 from app.models import DataSource, SeriesAggregate, SeriesSample
 from app.repositories import ArchivalSettingRepository, DataPointSeriesRepository
@@ -276,8 +274,7 @@ class TimeSeriesService(
         # Read here, not in the thread: a ContextVar does not cross into one.
         sync = current_sync_payload()
 
-        @sa_event.listens_for(db_session, "after_commit", once=True)
-        def _start_webhook_thread(session: DbSession) -> None:  # noqa: ARG001
+        def _start_webhook_thread() -> None:
             if not svix_service.is_enabled():
                 return
             threading.Thread(
@@ -285,6 +282,8 @@ class TimeSeriesService(
                 args=(samples_copy, sync),
                 daemon=True,
             ).start()
+
+        run_after_outer_commit(db_session, _start_webhook_thread)
 
         return counts
 
