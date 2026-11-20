@@ -18,8 +18,8 @@ from app.schemas.enums import ProviderName
 from app.services import ApiKeyDep, user_connection_service
 from app.services.provider_settings_service import provider_settings_service
 from app.services.providers.factory import ProviderFactory
-from app.services.providers.ladder.client import LadderApiError
 from app.services.providers.ladder.strategy import LadderStrategy
+from app.utils.exceptions import ProviderAuthRejectedError, ProviderError
 
 router = APIRouter()
 
@@ -65,26 +65,18 @@ def connect_ladder_manual(
 
     try:
         whoami = strategy.client.whoami_with_token(payload.token)
-    except LadderApiError as e:
-        if e.status_code in (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN):
+    except ProviderAuthRejectedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Ladder token rejected — paste a fresh joinladder.session cookie",
+        ) from e
+    except ProviderError as e:
+        if e.upstream_status == status.HTTP_403_FORBIDDEN:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Token validation failed: {e.detail}",
+                detail="Ladder token rejected — paste a fresh joinladder.session cookie",
             ) from e
-        gateway_status = (
-            e.status_code
-            if e.status_code
-            in (
-                status.HTTP_502_BAD_GATEWAY,
-                status.HTTP_503_SERVICE_UNAVAILABLE,
-                status.HTTP_504_GATEWAY_TIMEOUT,
-            )
-            else status.HTTP_502_BAD_GATEWAY
-        )
-        raise HTTPException(
-            status_code=gateway_status,
-            detail=f"Ladder API error during token validation: {e.detail}",
-        ) from e
+        raise
 
     user_data = whoami.get("user") or whoami
     provider_user_id = str(user_data.get("id") or user_data.get("userID") or "")

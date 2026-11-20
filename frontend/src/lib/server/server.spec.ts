@@ -1,6 +1,5 @@
-import { isRedirect, type Cookies } from '@sveltejs/kit';
+import { isRedirect, type Cookies, type RequestEvent } from '@sveltejs/kit';
 import { getRequestEvent } from '$app/server';
-import { env } from '$env/dynamic/private';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	ApiError,
@@ -111,14 +110,21 @@ describe('session cookie', () => {
 		expect(decodeSession(Buffer.from('{"a":1}').toString('base64url'))).toBeNull();
 	});
 
-	it('sets secure=false only when ORIGIN explicitly starts with http:// and omits secure otherwise', () => {
-		const originalOrigin = env.ORIGIN;
+	it('sets secure=false only for plain HTTP requests and omits secure for HTTPS or non-request contexts', () => {
 		const set = vi.fn();
 		const del = vi.fn();
 		const cookies = { set, delete: del } as unknown as Cookies;
+		const mockEvent = (url: string, forwardedProto?: string) =>
+			({
+				url: new URL(url),
+				request: new Request(url, {
+					headers: forwardedProto ? { 'x-forwarded-proto': forwardedProto } : {}
+				})
+			}) as unknown as RequestEvent;
 
 		try {
-			env.ORIGIN = 'http://192.168.1.71:3030';
+			// Direct HTTP LAN access (no env var needed).
+			vi.mocked(getRequestEvent).mockReturnValue(mockEvent('http://192.168.1.71:3030/login'));
 			createSession(cookies, tokens(), DEVELOPER);
 			clearSession(cookies);
 			expect(set).toHaveBeenLastCalledWith(
@@ -128,20 +134,30 @@ describe('session cookie', () => {
 			);
 			expect(del).toHaveBeenLastCalledWith(SESSION_COOKIE, { path: '/', secure: false });
 
-			env.ORIGIN = 'https://app.example.com';
+			// Direct HTTPS preserves SvelteKit's default secure cookie behavior.
+			vi.mocked(getRequestEvent).mockReturnValue(mockEvent('https://app.example.com/login'));
 			createSession(cookies, tokens(), DEVELOPER);
 			clearSession(cookies);
 			expect(set.mock.lastCall?.[2]).not.toHaveProperty('secure');
 			expect(del).toHaveBeenLastCalledWith(SESSION_COOKIE, { path: '/' });
 
-			delete env.ORIGIN;
+			// Reverse proxy terminating TLS (http internally, x-forwarded-proto: https) stays secure.
+			vi.mocked(getRequestEvent).mockReturnValue(mockEvent('http://127.0.0.1:3000/login', 'https'));
+			createSession(cookies, tokens(), DEVELOPER);
+			clearSession(cookies);
+			expect(set.mock.lastCall?.[2]).not.toHaveProperty('secure');
+			expect(del).toHaveBeenLastCalledWith(SESSION_COOKIE, { path: '/' });
+
+			// Outside a request context, preserve SvelteKit default.
+			vi.mocked(getRequestEvent).mockImplementation(() => {
+				throw new Error('no request event');
+			});
 			createSession(cookies, tokens(), DEVELOPER);
 			clearSession(cookies);
 			expect(set.mock.lastCall?.[2]).not.toHaveProperty('secure');
 			expect(del).toHaveBeenLastCalledWith(SESSION_COOKIE, { path: '/' });
 		} finally {
-			if (originalOrigin === undefined) delete env.ORIGIN;
-			else env.ORIGIN = originalOrigin;
+			vi.mocked(getRequestEvent).mockReset();
 		}
 	});
 });

@@ -5,8 +5,9 @@ from sqlalchemy.orm import Session
 
 from app.models import EventRecord, SeriesSample, User, WorkoutDetails
 from app.repositories.user_connection_repository import UserConnectionRepository
-from app.services.providers.ladder.client import LadderApiError, LadderClient
+from app.services.providers.ladder.client import LadderClient
 from app.services.providers.ladder.workouts import LadderWorkouts
+from app.utils.exceptions import ProviderError, ProviderNotConnectedError
 from tests.factories import UserConnectionFactory, UserFactory
 
 
@@ -85,7 +86,7 @@ def test_load_data_detail_failure_surfaces_and_allows_retry(db: Session, ladder_
     }
     client.get.side_effect = [
         list_payload,
-        LadderApiError(502, "temporary upstream error"),
+        ProviderError("ladder", upstream_status=502, upstream_body="temporary upstream error"),
         list_payload,
         detail_payload,
     ]
@@ -95,9 +96,9 @@ def test_load_data_detail_failure_surfaces_and_allows_retry(db: Session, ladder_
         "end_date": "2026-05-31T00:00:00+00:00",
     }
 
-    with patch("app.services.providers.ladder.workouts.time.sleep"), pytest.raises(LadderApiError) as exc:
+    with patch("app.services.providers.ladder.workouts.time.sleep"), pytest.raises(ProviderError) as exc:
         workouts.load_data(db, ladder_user.id, **kwargs)
-    assert exc.value.status_code == 502
+    assert exc.value.upstream_status == 502
     assert db.query(EventRecord).count() == 0
 
     with patch("app.services.providers.ladder.workouts.time.sleep"):
@@ -252,6 +253,6 @@ def test_load_data_skips_outside_window(db: Session, ladder_user: User) -> None:
 def test_load_data_requires_connection(db: Session) -> None:
     user = UserFactory()
     workouts = LadderWorkouts(client=MagicMock(spec=LadderClient))
-    with pytest.raises(LadderApiError) as exc:
+    with pytest.raises(ProviderNotConnectedError) as exc:
         workouts.load_data(db, user.id)
-    assert exc.value.status_code == 401
+    assert exc.value.provider == "ladder"

@@ -1,0 +1,97 @@
+---
+title: "Ladder API Integration"
+description: "Connect Ladder via manual JWT session token for workout and in-session heart-rate synchronization."
+keywords: ["ladder api integration", "ladder workouts", "ladder heart rate", "joinladder.session", "open wearables"]
+"og:title": "Ladder API Integration | Open Wearables"
+"og:description": "Connect Ladder via manual JWT session token. Syncs completed workouts and in-session heart-rate samples."
+"og:url": "https://docs.openwearables.io/providers/ladder-api-integration"
+"og:type": "article"
+"twitter:title": "Ladder API Integration | Open Wearables"
+"twitter:description": "Connect Ladder via manual JWT session token. Syncs completed workouts and in-session heart-rate samples."
+"twitter:card": "summary_large_image"
+---
+
+## Overview
+
+Ladder does not offer a public OAuth 2.0 developer flow. Open Wearables connects to Ladder by validating and storing a user's `joinladder.session` bearer JWT through the manual-connect endpoint, then pulling workouts and in-session heart-rate timeseries over REST.
+
+### Supported data types
+
+| Data Type | Support |
+|-----------|---------|
+| Workouts / Activities | Yes (duration, calories, avg/max/min HR) |
+| In-session heart rate | Yes (timeseries samples from session details) |
+| Sleep | No |
+| Daily summaries (24/7 data) | No |
+| Body composition | No |
+
+### Data delivery
+
+| Method | Description |
+|--------|-------------|
+| **Scheduled live pull** | Periodic background sync pulls newly completed Ladder workouts |
+| **On-demand / historical pull** | Backfill up to 90 days on connect (when `HISTORICAL_SYNC_ON_CONNECT=true`) or via `/api/v1/providers/ladder/users/{user_id}/sync` and `/sync/historical` |
+| **Webhooks** | Not supported |
+
+<Note>
+Direct vendor workout passthrough reads (`GET /api/v1/providers/ladder/users/{user_id}/workouts` and `/workouts/{workout_id}`) are not supported and return `501 Not Implemented`. Query imported workouts through the unified `/api/v1/users/{user_id}/events/workouts` endpoints instead.
+</Note>
+
+## Prerequisites
+
+- An active Ladder account on [joinladder.com](https://www.joinladder.com)
+- Ladder enabled in Open Wearables provider settings (enabled by default)
+- An Open Wearables API key (`X-Open-Wearables-API-Key`) and target `user_id`
+
+## Connecting a Ladder user
+
+<Steps>
+  <Step title="Extract the joinladder.session JWT">
+    1. Sign in to [https://www.joinladder.com](https://www.joinladder.com) in your browser.
+    2. Open DevTools → **Application** (Chrome/Edge) or **Storage** (Firefox) → **Cookies** → `https://www.joinladder.com`.
+    3. Copy the value of the `joinladder.session` cookie (a standard `header.payload.signature` JWT).
+  </Step>
+
+  <Step title="Register the token with Open Wearables">
+    Send the token to the manual-connect endpoint. Open Wearables validates the token against Ladder's `/users/me` endpoint before storing the connection and, when `HISTORICAL_SYNC_ON_CONNECT` is enabled, queues a 90-day historical workout backfill.
+
+    ```bash
+    curl -X POST "https://your-open-wearables-host/api/v1/ladder/users/${USER_ID}/connect-manual" \
+      -H "X-Open-Wearables-API-Key: ${API_KEY}" \
+      -H "Content-Type: application/json" \
+      -d "{
+        \"user_id\": \"${USER_ID}\",
+        \"token\": \"${LADDER_JWT}\"
+      }"
+    ```
+
+    A successful response returns `201 Created`:
+
+    ```json
+    {
+      "connection_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "provider_user_id": "ladder-user-id",
+      "provider_username": "team-id-if-present",
+      "status": "active"
+    }
+    ```
+  </Step>
+
+  <Step title="Trigger or wait for sync">
+    - Live sync runs on the regular pull schedule and can also be triggered on demand via `POST /api/v1/providers/ladder/users/{user_id}/sync`.
+    - Historical backfills can be triggered at any time from the dashboard (**Sync history**) or via `POST /api/v1/providers/ladder/users/{user_id}/sync/historical`.
+  </Step>
+</Steps>
+
+## Renewing an expired token
+
+Ladder session JWTs do not have a refresh token flow and expire periodically (typically after ~60 days, or earlier if the web session is signed out). When Ladder returns `401 Unauthorized`:
+
+- Sync runs fail with `PROVIDER_AUTH_REJECTED` (`502 Bad Gateway` on synchronous sync) and keep the last successful sync cursor intact so workouts completed while disconnected are not skipped.
+- To reconnect, sign in to [joinladder.com](https://www.joinladder.com), copy a fresh `joinladder.session` cookie, and call `POST /api/v1/ladder/users/{user_id}/connect-manual` again for the same `user_id`. Open Wearables updates the existing connection in place and backfills from the last successful sync timestamp.
+
+## Limitations
+
+- **Unofficial API**: Ladder does not publish an official public API; endpoints or payloads may change without notice.
+- **Detail-fetch pacing**: Open Wearables sleeps briefly between per-workout heart-rate detail fetches to avoid hammering Ladder's API during large historical backfills.
+- **Workouts only**: Ladder syncs completed workouts and their in-session heart-rate samples; sleep, recovery, and daily 24/7 summaries are not provided by Ladder.

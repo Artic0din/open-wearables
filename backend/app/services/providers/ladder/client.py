@@ -9,20 +9,18 @@ import httpx
 
 from app.database import DbSession
 from app.repositories.user_connection_repository import UserConnectionRepository
+from app.utils.exceptions import (
+    ProviderAuthRejectedError,
+    ProviderError,
+    ProviderNotConnectedError,
+    ProviderTokenUnavailableError,
+    provider_error_from_response,
+)
 from app.utils.structured_logging import get_logger
 
 logger = get_logger(__name__)
 
 ROCKY_API_BASE = "https://rocky-api.prod.ltdev.io"
-
-
-class LadderApiError(Exception):
-    """Raised when Ladder API returns non-2xx or transport fails."""
-
-    def __init__(self, status_code: int, detail: str):
-        self.status_code = status_code
-        self.detail = detail
-        super().__init__(f"Ladder API {status_code}: {detail}")
 
 
 class LadderClient:
@@ -39,8 +37,10 @@ class LadderClient:
 
     def _get_token(self, db_session: DbSession, user_id: UUID) -> str:
         connection = self.connection_repo.get_by_user_and_provider(db_session, user_id, self.provider_name)
-        if not connection or not connection.access_token:
-            raise LadderApiError(401, "No active Ladder connection for user")
+        if not connection:
+            raise ProviderNotConnectedError(self.provider_name)
+        if not connection.access_token:
+            raise ProviderTokenUnavailableError(self.provider_name)
         return connection.access_token
 
     @staticmethod
@@ -60,17 +60,15 @@ class LadderClient:
                 response = client.get(url, params=params, headers=self._headers(token))
             if response.status_code == 401:
                 self.logger.warning("Ladder 401 — token may be expired", user_id=str(user_id))
-                raise LadderApiError(401, "Ladder authorization expired. Re-paste cookie.")
+                raise ProviderAuthRejectedError(self.provider_name, upstream_body=response.text[:200])
             response.raise_for_status()
             return response.json()
-        except LadderApiError:
+        except ProviderError:
             raise
         except httpx.HTTPStatusError as e:
-            raise LadderApiError(e.response.status_code, e.response.text[:200]) from e
-        except httpx.TimeoutException as e:
-            raise LadderApiError(504, str(e)) from e
+            raise provider_error_from_response(self.provider_name, e.response.status_code, e.response.text[:200]) from e
         except httpx.HTTPError as e:
-            raise LadderApiError(502, str(e)) from e
+            raise ProviderError(self.provider_name, upstream_body=str(e)) from e
 
     @staticmethod
     def whoami_with_token(token: str) -> dict[str, Any]:
@@ -84,14 +82,12 @@ class LadderClient:
             with httpx.Client(timeout=15.0) as client:
                 response = client.get(url, headers=LadderClient._headers(token))
             if response.status_code == 401:
-                raise LadderApiError(401, "Ladder token rejected — paste a fresh joinladder.session cookie")
+                raise ProviderAuthRejectedError("ladder", upstream_body=response.text[:200])
             response.raise_for_status()
             return response.json()
-        except LadderApiError:
+        except ProviderError:
             raise
         except httpx.HTTPStatusError as e:
-            raise LadderApiError(e.response.status_code, e.response.text[:200]) from e
-        except httpx.TimeoutException as e:
-            raise LadderApiError(504, str(e)) from e
+            raise provider_error_from_response("ladder", e.response.status_code, e.response.text[:200]) from e
         except httpx.HTTPError as e:
-            raise LadderApiError(502, str(e)) from e
+            raise ProviderError("ladder", upstream_body=str(e)) from e

@@ -23,10 +23,17 @@ from app.repositories.user_connection_repository import UserConnectionRepository
 from app.schemas.enums import EventCategory, ProviderName, SeriesType
 from app.schemas.model_crud.activities.data_point_series import HeartRateSampleCreate
 from app.services.event_record_service import event_record_service
-from app.services.providers.ladder.client import LadderApiError, LadderClient
+from app.services.providers.ladder.client import LadderClient
 from app.services.providers.ladder.mapper import hr_samples_from_session_detail, session_to_event_record
 from app.services.timeseries_service import timeseries_service
 from app.utils.context import current_sync_payload
+from app.utils.exceptions import (
+    ProviderAuthRejectedError,
+    ProviderConnectionError,
+    ProviderError,
+    ProviderNotConnectedError,
+    ProviderTokenUnavailableError,
+)
 from app.utils.structured_logging import get_logger
 
 logger = get_logger(__name__)
@@ -90,8 +97,10 @@ class LadderWorkouts:
         end_dt = self._parse_bound(raw_end, default=now) if raw_end is not None else None
 
         connection = self.connection_repo.get_active_connection(db, user_id, self.provider_name)
-        if not connection or not connection.provider_user_id:
-            raise LadderApiError(401, "No active Ladder connection with provider_user_id")
+        if not connection:
+            raise ProviderNotConnectedError(self.provider_name)
+        if not connection.provider_user_id:
+            raise ProviderTokenUnavailableError(self.provider_name)
         connection_id = connection.id
         provider_user_id = connection.provider_user_id
 
@@ -112,7 +121,7 @@ class LadderWorkouts:
                 "/v1/listWorkoutSessions",
                 params={"userID": provider_user_id},
             )
-        except LadderApiError:
+        except (ProviderError, ProviderConnectionError):
             raise
         except Exception as e:
             self.logger.error("Ladder listWorkoutSessions failed", exc_info=e, user_id=str(user_id))
@@ -166,9 +175,9 @@ class LadderWorkouts:
                         params={"workoutSessionID": str(ext_id)},
                     )
                     samples = hr_samples_from_session_detail(detail_payload)
-                except LadderApiError as e:
-                    if e.status_code == 401:
-                        raise
+                except (ProviderAuthRejectedError, ProviderConnectionError):
+                    raise
+                except ProviderError as e:
                     detail_errors.append(e)
                     self.logger.error(
                         "Ladder HR detail sync failed",

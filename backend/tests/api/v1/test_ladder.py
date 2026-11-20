@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.models import DataSource, ProviderSetting, UserConnection
 from app.schemas.enums import ProviderName
-from app.services.providers.ladder.client import LadderApiError
-from tests.factories import ApiKeyFactory, UserFactory
+from app.utils.exceptions import ProviderAuthRejectedError, ProviderError, ProviderRateLimitError
+from tests.factories import ApiKeyFactory, UserConnectionFactory, UserFactory
 
 
 class TestLadderConnectManual:
@@ -56,7 +56,7 @@ class TestLadderConnectManual:
 
         with patch(
             "app.services.providers.ladder.client.LadderClient.whoami_with_token",
-            side_effect=LadderApiError(401, "bad token"),
+            side_effect=ProviderAuthRejectedError("ladder", upstream_body="bad token"),
         ):
             response = client.post(
                 f"/api/v1/ladder/users/{user.id}/connect-manual",
@@ -72,10 +72,15 @@ class TestLadderConnectManual:
         api_key = ApiKeyFactory()
         headers = {"X-Open-Wearables-API-Key": api_key.plain_key}
 
-        for upstream_status, expected_status in [(500, 502), (503, 503), (504, 504)]:
+        cases = [
+            (ProviderError("ladder", upstream_status=500, upstream_body="upstream outage"), 502),
+            (ProviderError("ladder", upstream_status=503, upstream_body="upstream outage"), 502),
+            (ProviderRateLimitError("ladder", upstream_status=429, upstream_body="rate limited"), 503),
+        ]
+        for error, expected_status in cases:
             with patch(
                 "app.services.providers.ladder.client.LadderClient.whoami_with_token",
-                side_effect=LadderApiError(upstream_status, "upstream outage"),
+                side_effect=error,
             ):
                 response = client.post(
                     f"/api/v1/ladder/users/{user.id}/connect-manual",
@@ -143,3 +148,28 @@ class TestLadderConnectManual:
 
         detail_resp = client.get(f"/api/v1/providers/ladder/users/{user.id}/workouts/sess-1", headers=headers)
         assert detail_resp.status_code == 501
+
+    def test_sync_data_maps_ladder_provider_errors(self, client: TestClient, db: Session) -> None:
+        user = UserFactory()
+        api_key = ApiKeyFactory()
+        headers = {"X-Open-Wearables-API-Key": api_key.plain_key}
+
+        # Not connected -> 404 PROVIDER_NOT_CONNECTED (never 500).
+        missing_resp = client.post(f"/api/v1/providers/ladder/users/{user.id}/sync?async=false", headers=headers)
+        assert missing_resp.status_code == 404
+        assert missing_resp.json()["code"] == "PROVIDER_NOT_CONNECTED"
+
+        # Connected, but Ladder rejects token -> 502 PROVIDER_AUTH_REJECTED (never 500).
+        UserConnectionFactory(
+            user=user,
+            provider="ladder",
+            provider_user_id="ladder-1",
+            access_token="expired-jwt",
+        )
+        with patch(
+            "app.services.providers.ladder.client.LadderClient.get",
+            side_effect=ProviderAuthRejectedError("ladder", upstream_body="expired"),
+        ):
+            rejected_resp = client.post(f"/api/v1/providers/ladder/users/{user.id}/sync?async=false", headers=headers)
+        assert rejected_resp.status_code == 502
+        assert rejected_resp.json()["code"] == "PROVIDER_AUTH_REJECTED"
