@@ -1,5 +1,6 @@
 import { isRedirect, type Cookies } from '@sveltejs/kit';
 import { getRequestEvent } from '$app/server';
+import { env } from '$env/dynamic/private';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	ApiError,
@@ -12,6 +13,8 @@ import {
 import { createAuthContext, type AuthContext } from './auth';
 import { forgetAll, keep, recall } from './cache';
 import {
+	clearSession,
+	createSession,
 	decodeSession,
 	encodeSession,
 	needsRefresh,
@@ -106,6 +109,40 @@ describe('session cookie', () => {
 		expect(decodeSession(undefined)).toBeNull();
 		expect(decodeSession('not-base64-json')).toBeNull();
 		expect(decodeSession(Buffer.from('{"a":1}').toString('base64url'))).toBeNull();
+	});
+
+	it('sets secure=false only when ORIGIN explicitly starts with http:// and omits secure otherwise', () => {
+		const originalOrigin = env.ORIGIN;
+		const set = vi.fn();
+		const del = vi.fn();
+		const cookies = { set, delete: del } as unknown as Cookies;
+
+		try {
+			env.ORIGIN = 'http://192.168.1.71:3030';
+			createSession(cookies, tokens(), DEVELOPER);
+			clearSession(cookies);
+			expect(set).toHaveBeenLastCalledWith(
+				SESSION_COOKIE,
+				expect.any(String),
+				expect.objectContaining({ httpOnly: true, secure: false, sameSite: 'lax', path: '/' })
+			);
+			expect(del).toHaveBeenLastCalledWith(SESSION_COOKIE, { path: '/', secure: false });
+
+			env.ORIGIN = 'https://app.example.com';
+			createSession(cookies, tokens(), DEVELOPER);
+			clearSession(cookies);
+			expect(set.mock.lastCall?.[2]).not.toHaveProperty('secure');
+			expect(del).toHaveBeenLastCalledWith(SESSION_COOKIE, { path: '/' });
+
+			delete env.ORIGIN;
+			createSession(cookies, tokens(), DEVELOPER);
+			clearSession(cookies);
+			expect(set.mock.lastCall?.[2]).not.toHaveProperty('secure');
+			expect(del).toHaveBeenLastCalledWith(SESSION_COOKIE, { path: '/' });
+		} finally {
+			if (originalOrigin === undefined) delete env.ORIGIN;
+			else env.ORIGIN = originalOrigin;
+		}
 	});
 });
 

@@ -16,6 +16,7 @@ from app.repositories.data_source_repository import DataSourceRepository
 from app.schemas.auth import ConnectionStatus
 from app.schemas.enums import ProviderName
 from app.services import ApiKeyDep, user_connection_service
+from app.services.provider_settings_service import provider_settings_service
 from app.services.providers.factory import ProviderFactory
 from app.services.providers.ladder.client import LadderApiError
 from app.services.providers.ladder.strategy import LadderStrategy
@@ -52,13 +53,38 @@ def connect_ladder_manual(
     if payload.user_id != user_id:
         raise HTTPException(status_code=400, detail="user_id in path must match body")
 
+    setting = provider_settings_service.get_settings_map(db).get(ProviderName.LADDER.value)
+    if setting is not None and not setting.is_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Provider '{ProviderName.LADDER.value}' is not enabled",
+        )
+
     factory = ProviderFactory()
     strategy = cast(LadderStrategy, factory.get_provider(ProviderName.LADDER.value))
 
     try:
         whoami = strategy.client.whoami_with_token(payload.token)
     except LadderApiError as e:
-        raise HTTPException(status_code=401, detail=f"Token validation failed: {e.detail}") from e
+        if e.status_code in (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Token validation failed: {e.detail}",
+            ) from e
+        gateway_status = (
+            e.status_code
+            if e.status_code
+            in (
+                status.HTTP_502_BAD_GATEWAY,
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                status.HTTP_504_GATEWAY_TIMEOUT,
+            )
+            else status.HTTP_502_BAD_GATEWAY
+        )
+        raise HTTPException(
+            status_code=gateway_status,
+            detail=f"Ladder API error during token validation: {e.detail}",
+        ) from e
 
     user_data = whoami.get("user") or whoami
     provider_user_id = str(user_data.get("id") or user_data.get("userID") or "")

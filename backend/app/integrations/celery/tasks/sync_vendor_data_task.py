@@ -324,14 +324,19 @@ def sync_vendor_data(
 
                     # effective_start is always set above; parse into datetime objects
                     start_dt = datetime.fromisoformat(effective_start.replace("Z", "+00:00"))
-                    end_dt = datetime.now(timezone.utc)
+                    fetch_started_at = datetime.now(timezone.utc)
+                    end_dt = fetch_started_at
                     if end_date:
                         with suppress(ValueError):
-                            end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+                            parsed_end = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+                            if parsed_end.tzinfo is None:
+                                parsed_end = parsed_end.replace(tzinfo=timezone.utc)
+                            end_dt = parsed_end
 
                     # Sync workouts
                     if strategy.workouts:
-                        params = build_sync_params(effective_start, end_date)
+                        effective_end = end_date if end_date is not None else end_dt.isoformat()
+                        params = build_sync_params(effective_start, effective_end)
                         _emit_sync_status(
                             emit_sync_progress,
                             user_uuid,
@@ -442,8 +447,17 @@ def sync_vendor_data(
                                 )
                             )
 
-                    if not is_historical:
-                        user_connection_repo.update_last_synced_at(db, connection)
+                    final_status = run_status_from(data_type_outcomes)
+                    if not is_historical and final_status != SyncStatus.FAILED:
+                        # Cap cursor advancement at the pre-fetch time so an explicit future end_date
+                        # cannot skip workouts completed between this pull and that future timestamp.
+                        sync_cursor = min(end_dt, fetch_started_at)
+                        if connection.last_synced_at is not None:
+                            prev_synced_at = connection.last_synced_at
+                            if prev_synced_at.tzinfo is None:
+                                prev_synced_at = prev_synced_at.replace(tzinfo=timezone.utc)
+                            sync_cursor = max(prev_synced_at, sync_cursor)
+                        user_connection_repo.update_last_synced_at(db, connection, synced_at=sync_cursor)
 
                     if shared_token and connection.provider_user_id:
                         # Stop renewing first, or the renewer can retake the lock we just released.
@@ -488,7 +502,6 @@ def sync_vendor_data(
                         lookback=format_duration(settings.pull_sync_lookback) if settings.pull_sync_lookback else None,
                     )
 
-                    final_status = run_status_from(data_type_outcomes)
                     # Before the run's terminal event: a consumer acting on it reads the per-type
                     # outcomes from the history. The run itself was stored when it started.
                     try_record_data_types(run_id, data_type_outcomes, scope=sync_scope)

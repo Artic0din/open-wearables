@@ -71,4 +71,22 @@ describe('ConnectionRoutes', () => {
 			.element(page.getByRole('button', { name: 'Sync history' }))
 			.not.toBeInTheDocument();
 	});
+
+	it('uses server pull guidance instead of SDK hints for non-OAuth pull providers like Ladder', async () => {
+		await render(ConnectionRoutes, {
+			connection: connection({
+				provider: 'ladder',
+				rest_pull: true,
+				webhook_ping: false,
+				live_sync_mode: 'pull'
+			}),
+			viaSdk: true
+		});
+
+		await expect.element(page.getByText('Pulled on a schedule')).toBeVisible();
+		await expect.element(page.getByText('Pulled on demand.')).toBeVisible();
+		await expect.element(page.getByRole('button', { name: 'Sync now' })).toBeVisible();
+		await expect.element(page.getByRole('button', { name: 'Sync history' })).toBeVisible();
+		await expect.element(page.getByText(/through the SDK/)).not.toBeInTheDocument();
+	});
 });

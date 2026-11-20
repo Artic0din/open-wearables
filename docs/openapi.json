@@ -5378,6 +5378,101 @@
         }
       }
     },
+    "/api/v1/ladder/users/{user_id}/connect-manual": {
+      "post": {
+        "tags": [
+          "External: Ladder"
+        ],
+        "summary": "Connect Ladder Manual",
+        "description": "Validate Ladder JWT, persist connection, optionally start historical sync.",
+        "operationId": "connect_ladder_manual_api_v1_ladder_users__user_id__connect_manual_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          },
+          {
+            "name": "X-Open-Wearables-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Open-Wearables-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LadderConnectManualRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LadderConnectManualResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblem"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Client error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Server error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/providers/{provider}/users/{user_id}/sync": {
       "post": {
         "tags": [
@@ -17321,6 +17416,60 @@
         ],
         "title": "InvitationStatus"
       },
+      "LadderConnectManualRequest": {
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "User Id"
+          },
+          "token": {
+            "type": "string",
+            "title": "Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "token"
+        ],
+        "title": "LadderConnectManualRequest"
+      },
+      "LadderConnectManualResponse": {
+        "properties": {
+          "connection_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Connection Id"
+          },
+          "provider_user_id": {
+            "type": "string",
+            "title": "Provider User Id"
+          },
+          "provider_username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Username"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ConnectionStatus"
+          }
+        },
+        "type": "object",
+        "required": [
+          "connection_id",
+          "provider_user_id",
+          "provider_username",
+          "status"
+        ],
+        "title": "LadderConnectManualResponse"
+      },
       "LiveSyncMode": {
         "type": "string",
         "enum": [
@@ -18808,6 +18957,7 @@
           "ultrahuman",
           "sensorbio",
           "withings",
+          "ladder",
           "unknown",
           "internal"
         ],

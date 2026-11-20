@@ -67,8 +67,10 @@ class LadderClient:
             raise
         except httpx.HTTPStatusError as e:
             raise LadderApiError(e.response.status_code, e.response.text[:200]) from e
+        except httpx.TimeoutException as e:
+            raise LadderApiError(504, str(e)) from e
         except httpx.HTTPError as e:
-            raise LadderApiError(500, str(e)) from e
+            raise LadderApiError(502, str(e)) from e
 
     @staticmethod
     def whoami_with_token(token: str) -> dict[str, Any]:
@@ -89,5 +91,7 @@ class LadderClient:
             raise
         except httpx.HTTPStatusError as e:
             raise LadderApiError(e.response.status_code, e.response.text[:200]) from e
+        except httpx.TimeoutException as e:
+            raise LadderApiError(504, str(e)) from e
         except httpx.HTTPError as e:
-            raise LadderApiError(500, str(e)) from e
+            raise LadderApiError(502, str(e)) from e

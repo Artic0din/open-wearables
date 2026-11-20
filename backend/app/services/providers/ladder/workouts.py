@@ -13,18 +13,20 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
+from fastapi import HTTPException, status
 from sqlalchemy import select
 
 from app.database import DbSession
 from app.models import EventRecord
 from app.repositories.data_source_repository import DataSourceRepository
 from app.repositories.user_connection_repository import UserConnectionRepository
-from app.schemas.enums import ProviderName, SeriesType
+from app.schemas.enums import EventCategory, ProviderName, SeriesType
 from app.schemas.model_crud.activities.data_point_series import HeartRateSampleCreate
 from app.services.event_record_service import event_record_service
 from app.services.providers.ladder.client import LadderApiError, LadderClient
 from app.services.providers.ladder.mapper import hr_samples_from_session_detail, session_to_event_record
 from app.services.timeseries_service import timeseries_service
+from app.utils.context import current_sync_payload
 from app.utils.structured_logging import get_logger
 
 logger = get_logger(__name__)
@@ -84,27 +86,31 @@ class LadderWorkouts:
             kwargs.get("start_date") or kwargs.get("start"),
             default=now - timedelta(days=90),
         )
-        end_dt = self._parse_bound(kwargs.get("end_date") or kwargs.get("end"), default=now)
+        raw_end = kwargs.get("end_date") or kwargs.get("end")
+        end_dt = self._parse_bound(raw_end, default=now) if raw_end is not None else None
 
         connection = self.connection_repo.get_active_connection(db, user_id, self.provider_name)
         if not connection or not connection.provider_user_id:
             raise LadderApiError(401, "No active Ladder connection with provider_user_id")
+        connection_id = connection.id
+        provider_user_id = connection.provider_user_id
 
         data_source = self.data_source_repo.ensure_data_source(
             db_session=db,
             user_id=user_id,
             provider=ProviderName.LADDER,
-            user_connection_id=connection.id,
+            user_connection_id=connection_id,
             device_model="Ladder Web",
             source="ladder",
         )
+        data_source_id = data_source.id
 
         try:
             payload = self.client.get(
                 db,
                 user_id,
                 "/v1/listWorkoutSessions",
-                params={"userID": connection.provider_user_id},
+                params={"userID": provider_user_id},
             )
         except LadderApiError:
             raise
@@ -118,7 +124,7 @@ class LadderWorkouts:
             row[0]
             for row in db.execute(
                 select(EventRecord.external_id).where(
-                    EventRecord.data_source_id == data_source.id,
+                    EventRecord.data_source_id == data_source_id,
                     EventRecord.external_id.is_not(None),
                 )
             ).all()
@@ -127,6 +133,7 @@ class LadderWorkouts:
 
         inserted = 0
         first_detail = True
+        detail_errors: list[Exception] = []
 
         for session in sessions:
             ws = session.get("workoutSession") or session
@@ -135,60 +142,109 @@ class LadderWorkouts:
                 continue
 
             session_end = self._session_end(session)
-            if session_end is None or session_end < start_dt or session_end > end_dt:
+            if session_end is None or session_end < start_dt or (end_dt is not None and session_end > end_dt):
                 continue
 
-            mapped = session_to_event_record(session, user_id, data_source.id)
+            mapped = session_to_event_record(session, user_id, data_source_id)
             if mapped is None:
                 continue
             record, detail = mapped
-            record.user_connection_id = connection.id
+            record.user_connection_id = connection_id
 
-            created = event_record_service.create(db, record)
-            detail_for_record = detail.model_copy(update={"record_id": created.id})
-            event_record_service.create_detail(db, detail_for_record)
+            # Fetch HR detail before persisting the workout so a transient detail
+            # failure does not commit an incomplete workout that retries would skip.
+            samples: list[dict] = []
+            if ext_id is not None:
+                if not first_detail:
+                    time.sleep(LADDER_DETAIL_FETCH_DELAY_SEC)
+                first_detail = False
+                try:
+                    detail_payload = self.client.get(
+                        db,
+                        user_id,
+                        "/v1/getDetailedWorkoutSession",
+                        params={"workoutSessionID": str(ext_id)},
+                    )
+                    samples = hr_samples_from_session_detail(detail_payload)
+                except LadderApiError as e:
+                    if e.status_code == 401:
+                        raise
+                    detail_errors.append(e)
+                    self.logger.error(
+                        "Ladder HR detail sync failed",
+                        exc_info=e,
+                        user_id=str(user_id),
+                        session_id=str(ext_id),
+                    )
+                    continue
+                except Exception as e:
+                    detail_errors.append(e)
+                    self.logger.error(
+                        "Ladder HR detail sync failed",
+                        exc_info=e,
+                        user_id=str(user_id),
+                        session_id=str(ext_id),
+                    )
+                    continue
+
+            # Persist workout, details, and HR samples in a single transaction so
+            # an HR write failure rolls back the workout instead of leaving it incomplete.
+            with db.begin_nested():
+                created = event_record_service.crud.create_and_flush(db, record)
+                created_id = created.id
+                detail_for_record = detail.model_copy(update={"record_id": created_id})
+                event_record_service.event_record_detail_repo.create_and_flush(
+                    db, detail_for_record, detail_type=EventCategory.WORKOUT
+                )
+                if samples:
+                    hr_creates = [
+                        HeartRateSampleCreate(
+                            id=uuid4(),
+                            user_id=user_id,
+                            source="ladder",
+                            device_model="Ladder Web",
+                            data_source_id=data_source_id,
+                            recorded_at=sample["recorded_at"],
+                            value=Decimal(str(sample["value"])),
+                            series_type=SeriesType.heart_rate,
+                            provider="ladder",
+                            user_connection_id=connection_id,
+                        )
+                        for sample in samples
+                    ]
+                    timeseries_service.bulk_create_samples(db, hr_creates)
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
+            refreshed_record = event_record_service.crud.get(db, created_id)
+            refreshed_source = self.data_source_repo.get(db, data_source_id)
+            if refreshed_record is not None and refreshed_source is not None:
+                event_record_service._emit_event_record_webhook(
+                    refreshed_record, refreshed_source, detail_for_record, current_sync_payload()
+                )
+
             inserted += 1
             if record.external_id:
                 existing_external_ids.add(record.external_id)
 
-            # Fetch HR detail for newly inserted sessions only.
-            if ext_id is None:
-                continue
-            if not first_detail:
-                time.sleep(LADDER_DETAIL_FETCH_DELAY_SEC)
-            first_detail = False
-            try:
-                detail_payload = self.client.get(
-                    db,
-                    user_id,
-                    "/v1/getDetailedWorkoutSession",
-                    params={"workoutSessionID": str(ext_id)},
-                )
-                samples = hr_samples_from_session_detail(detail_payload)
-                if not samples:
-                    continue
-                hr_creates = [
-                    HeartRateSampleCreate(
-                        id=uuid4(),
-                        user_id=user_id,
-                        source="ladder",
-                        device_model="Ladder Web",
-                        data_source_id=data_source.id,
-                        recorded_at=sample["recorded_at"],
-                        value=Decimal(str(sample["value"])),
-                        series_type=SeriesType.heart_rate,
-                        provider="ladder",
-                        user_connection_id=connection.id,
-                    )
-                    for sample in samples
-                ]
-                timeseries_service.bulk_create_samples(db, hr_creates)
-            except Exception as e:
-                self.logger.error(
-                    "Ladder HR detail sync failed",
-                    exc_info=e,
-                    user_id=str(user_id),
-                    session_id=str(ext_id),
-                )
+        if detail_errors:
+            raise detail_errors[0]
 
         return inserted
+
+    def get_workouts_from_api(self, db: DbSession, user_id: UUID, **kwargs: Any) -> Any:
+        """Direct workout list passthrough is not supported for Ladder."""
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Provider 'ladder' does not support direct workout reads",
+        )
+
+    def get_workout_detail_from_api(self, db: DbSession, user_id: UUID, workout_id: str, **kwargs: Any) -> Any:
+        """Direct workout detail passthrough is not supported for Ladder."""
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Provider 'ladder' does not support direct workout reads",
+        )
