@@ -1,4 +1,5 @@
 import type { Cookies } from '@sveltejs/kit';
+import { env } from '$env/dynamic/private';
 import {
 	ApiError,
 	refreshTokens,
@@ -61,16 +62,23 @@ export function decodeSession(raw: string | undefined): Session | null {
 }
 
 // HttpOnly keeps the tokens out of reach of any script on the page.
+// Allow non-secure cookies only when ORIGIN explicitly uses http:// (e.g. LAN self-hosting).
+function isSecureCookie(): boolean {
+	return !(env.ORIGIN ?? '').startsWith('http://');
+}
+
 function store(cookies: Cookies, session: Session): void {
 	cookies.set(SESSION_COOKIE, encodeSession(session), {
 		path: '/',
 		httpOnly: true,
+		secure: isSecureCookie(),
 		sameSite: 'lax',
 		maxAge: SESSION_TTL_SECONDS
 	});
 }
 
-export const clearSession = (cookies: Cookies) => cookies.delete(SESSION_COOKIE, { path: '/' });
+export const clearSession = (cookies: Cookies) =>
+	cookies.delete(SESSION_COOKIE, { path: '/', secure: isSecureCookie() });
 
 export function createSession(cookies: Cookies, tokens: TokenResponse, developer: Developer): void {
 	store(cookies, sessionFromTokens(tokens, developer));
